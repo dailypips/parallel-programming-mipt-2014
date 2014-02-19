@@ -9,6 +9,7 @@ class DataContainer
 private:
 	bool isReady;
 	T data;
+	std::shared_ptr<std::exception> exception;
 
 	std::mutex mutex;
 	std::condition_variable condition;
@@ -26,12 +27,23 @@ public:
 		{
 			condition.wait(lock, [this]() -> bool { return isReady; });
 		}
+		if (exception)
+		{
+			throw *exception;
+		}
 		return data;
 	}
 
 	void set(const T & data)
 	{
 		this->data = data;
+		isReady = true;
+		condition.notify_all();
+	}
+
+	void setException(const std::exception & e)
+	{
+		exception = std::make_shared<std::exception>(e);		
 		isReady = true;
 		condition.notify_all();
 	}
@@ -57,6 +69,11 @@ public:
 	{
 		ptr->set(data);
 	}
+
+	void setException(const std::exception & e)
+	{
+		ptr->setException(e);
+	}
 };
 
 // partial specializations for void 
@@ -65,6 +82,7 @@ class DataContainer<void>
 {
 private:
 	bool isReady;
+	std::shared_ptr<std::exception> exception;
 
 	std::mutex mutex;
 	std::condition_variable condition;
@@ -82,12 +100,22 @@ public:
 		{
 			condition.wait(lock, [this]() -> bool { return isReady; });
 		}
+		if (exception)
+		{
+			throw *exception;
+		}
 	}
 
 	void set()
 	{
 		isReady = true;
 		condition.notify_all();
+	}
+
+	void setException(const std::exception & e)
+	{
+		exception = std::make_shared<std::exception>(e);
+		set();
 	}
 };
 
@@ -110,5 +138,10 @@ public:
 	void set()
 	{
 		ptr->set();
+	}
+
+	void setException(const std::exception & e)
+	{
+		ptr->setException(e);
 	}
 };

@@ -53,11 +53,23 @@ int main()
 		std::chrono::seconds dura(3);
 		std::this_thread::sleep_for(dura); };
 
+	auto f2 = []() { throw std::exception("exception"); };
+
 	auto future = pool.runAsync<int>(f);
 	auto future1 = pool.runAsync<void>(f1);
+	auto future2 = pool.runAsync<void>(f2);
 
 	std::cout << future.get() << std::endl;
 	future1.get();
+
+	try
+	{
+		future2.get();
+	}
+	catch(const std::exception & e)
+	{
+		std::cout << e.what() << std::endl;
+	}
 
 	system("pause");
 

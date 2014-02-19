@@ -238,13 +238,34 @@ public:
 template<class T, class Fn> 
 std::function<void()> make_func(Future<T> & future, const Fn & task)
 {
-	return [future, &task]() mutable { future.set(task()); };
+	return [future, &task]() mutable 
+	{ 
+		try
+		{
+			future.set(task()); 
+		}
+		catch(const std::exception & e)
+		{
+			future.setException(e);
+		}
+	};
 }
 
 template<class Fn>
 std::function<void()> make_func(Future<void> & future, const Fn & task)
 {
-	return [future, &task]() mutable { task(); future.set(); };
+	return [future, &task]() mutable 
+	{ 
+		try
+		{
+			task(); 
+			future.set(); 
+		}
+		catch(const std::exception & e)
+		{
+			future.setException(e);
+		}
+	};
 }
 
 template<class T>
