@@ -2,6 +2,7 @@
 #include <thread>
 #include <utility>
 #include <condition_variable>
+#include <type_traits>
 
 #include "ThreadsafePriorityQueue.hpp"
 
@@ -35,7 +36,7 @@ public:
 		unsigned int core_count = std::thread::hardware_concurrency();
 		for(size_t index = 0; index < core_count; ++index)
 		{
-			workers.emplace_back(std::bind(&ThreadPool::doWork, this));
+			workers.emplace_back(&ThreadPool::doWork, this);
 		}
 	}
 
@@ -55,7 +56,7 @@ public:
 };
 
 template<class T, class Fn> 
-std::function<void()> make_func(Future<T> & future, const Fn & task)
+std::function<void()> make_func(Future<T> & future, Fn & task)
 {
 	return [future, &task]() mutable 
 	{ 
@@ -71,7 +72,7 @@ std::function<void()> make_func(Future<T> & future, const Fn & task)
 }
 
 template<class Fn>
-std::function<void()> make_func(Future<void> & future, const Fn & task)
+std::function<void()> make_func(Future<void> & future, Fn & task)
 {
 	return [future, &task]() mutable 
 	{ 
@@ -146,10 +147,10 @@ public:
 		return std::shared_ptr<T>();
 	}		
 
-	template<class R, class Fn>
-	Future<R> runAsync(const Fn & task, int priority = DEFAULT_PRIORITY)
+	template<class Fn>
+	Future<typename std::result_of<Fn()>::type> runAsync(Fn & task, int priority = DEFAULT_PRIORITY)
 	{
-		Future<R> future;
+		Future<typename std::result_of<Fn()>::type> future;
 		auto fn = make_func(future, task);
 
 		addTask(fn, priority);
@@ -210,10 +211,10 @@ public:
 		return std::shared_ptr<T>();
 	}	
 
-	template<class R, class Fn>
-	Future<R> runAsync(const Fn & task)
+	template<class Fn>
+	Future<typename std::result_of<Fn()>::type> runAsync(Fn & task)
 	{
-		Future<R> future;
+		Future<typename std::result_of<Fn()>::type> future;
 		auto fn = make_func(future, task);
 
 		addTask(fn);

@@ -6,72 +6,89 @@
 
 #include "ThreadPool.hpp"
 
-#define THREAD_COUNT 100
-#define ELEM_COUNT 100
-
-void threadFunc(PriorityQueue<int> & queue)
+class Matrix
 {
-	for(size_t index = 0; index < ELEM_COUNT; ++index)
+private:
+	size_t size;
+	std::vector<int> matrix;
+public:
+	Matrix(size_t size) :
+		size(size),
+		matrix(size * size, 0)
 	{
-		queue.add(index, 0);
-	}
-}
-
-void priorityQueueTest()
-{
-	PriorityQueue<int> queue;
-	std::vector<std::thread> threads;
-	for(size_t index = 0; index < THREAD_COUNT; ++index)
-	{
-		threads.emplace_back(&threadFunc, std::ref(queue));
 	}
 
-	for(size_t index = 0; index < THREAD_COUNT * ELEM_COUNT; ++index)
+	int & at(size_t row, size_t column)
 	{
-		std::cout << *queue.get_min() << std::endl;
+		return matrix[row * size + column];
 	}
 
-	for(auto & it : threads)
+	void fill()
 	{
-		if (it.joinable())
+		for (size_t index = 0; index < size * size; ++index)
 		{
-			it.join();
+			matrix[index] = rand() % 10;
 		}
 	}
-}
+
+	void print()
+	{
+		std::cout << "======================================" << std::endl;
+
+		for (size_t index = 0; index < size * size; ++index)
+		{
+			std::cout << matrix[index] << " ";
+			if ((index + 1) % size == 0) 
+			{
+				std::cout << std::endl;
+			}
+		}
+
+		std::cout << "======================================" << std::endl;
+	}
+};
+
 
 int main()
 {
-	PriorityThreadPool pool;
+	SimpleThreadPool pool;
+	
+	srand(3);
+	const int size = 1000;
+	Matrix m1(size), m2(size), m3(size);
+	std::vector<Future<void>> futures;
 
-	auto f = []() { 
-		std::cout << "hello" << std::endl; 
-		return 0; 
+	std::cout << "begin fill" << std::endl;
+
+	m1.fill();
+	m2.fill();
+
+	std::cout << "end fill" << std::endl;
+
+	auto f = [&](size_t row)
+	{
+		for (size_t column = 0; column < size; ++column)
+		{
+			for (size_t elem = 0; elem < size; ++elem)
+			{
+				m3.at(row, column) += m1.at(row, elem) * m2.at(elem, column);
+			}
+		}
 	};
 
-	auto f1 = []() { std::cout << "here's a void function" << std::endl; 
-		std::chrono::seconds dura(3);
-		std::this_thread::sleep_for(dura); };
+	auto begin = std::chrono::high_resolution_clock::now();
 
-	auto f2 = []() { throw std::exception("exception"); };
-
-	auto future = pool.runAsync<int>(f);
-	auto future1 = pool.runAsync<void>(f1);
-	auto future2 = pool.runAsync<void>(f2);
-
-	std::cout << future.get() << std::endl;
-	future1.get();
-
-	try
+	for (size_t index = 0; index < size; ++index)
 	{
-		future2.get();
-	}
-	catch(const std::exception & e)
-	{
-		std::cout << e.what() << std::endl;
+		//std::cout << "running for row #" << index << std::endl;
+		futures.push_back(pool.runAsync(std::bind(f, index)));
 	}
 
-	system("pause");
+	std::for_each(futures.begin(), futures.end(), std::mem_fn(&Future<void>::get));
+
+	auto end = std::chrono::high_resolution_clock::now();
+	auto tm = std::chrono::duration_cast<std::chrono::duration<double>>(end - begin);
+	std::cout << tm.count() << std::endl;
 
 	return 0;
 }

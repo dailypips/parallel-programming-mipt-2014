@@ -11,38 +11,6 @@
 
 #include "Future.hpp"
 
-class SpinLock
-{
-private:
-	std::atomic_flag locked;
-
-public:
-	SpinLock()
-	{
-	}
-
-	void lock()
-	{
-		while(locked.test_and_set(std::memory_order_acquire))
-			; // busy wait
-	}
-
-	bool try_lock()
-	{
-		return !locked.test_and_set(std::memory_order_acquire);
-	}
-
-	void unlock()
-	{
-		locked.clear(std::memory_order_release);
-	}
-
-	~SpinLock()
-	{
-		unlock();
-	}
-};
-
 template<class T>
 class PriorityQueue
 {
@@ -64,21 +32,21 @@ private:
 		}
 	};
 
-	std::vector<std::pair<QueueItem, SpinLock>> heap;
+	std::vector<std::pair<QueueItem, boost::detail::spinlock>> heap;
 	mutable boost::shared_mutex readWriteLock;
 
 	typedef boost::shared_lock<boost::shared_mutex> ReadLock;
 	typedef boost::unique_lock<boost::shared_mutex> WriteLock;
 
-	std::unique_lock<SpinLock> getLock(size_t index, bool isDefer = false)
+	std::unique_lock<boost::detail::spinlock> getLock(size_t index, bool isDefer = false)
 	{
 		if (isDefer)
 		{
-			return std::unique_lock<SpinLock>(heap[index].second, std::defer_lock);
+			return std::unique_lock<boost::detail::spinlock>(heap[index].second, std::defer_lock);
 		}
 		else
 		{
-			return std::unique_lock<SpinLock>(heap[index].second);
+			return std::unique_lock<boost::detail::spinlock>(heap[index].second);
 		}
 	}
 
@@ -141,7 +109,7 @@ private:
 
 		auto currentLock = getLock(index, true);
 		auto leftLock = getLock(left, true);
-		std::unique_lock<SpinLock> rightLock;
+		std::unique_lock<boost::detail::spinlock> rightLock;
 		if (size() > right) 
 		{
 			rightLock = getLock(right, true);
@@ -228,7 +196,7 @@ public:
 	void add(const T & value, int priority)
 	{
 		WriteLock writelock(readWriteLock);
-		heap.push_back(std::make_pair(QueueItem(value, priority), SpinLock()));
+		heap.emplace_back(QueueItem(value, priority), boost::detail::spinlock());
 		size_t lastIndex = size() - 1;
 		writelock.unlock();
 		heapify(lastIndex);
