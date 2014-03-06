@@ -32,13 +32,15 @@ private:
 		}
 	};
 
-	std::vector<std::pair<QueueItem, boost::detail::spinlock>> heap;
+	typedef boost::detail::spinlock SpinLock;
+
+	std::vector<std::pair<QueueItem, SpinLock>> heap;
 	mutable boost::shared_mutex readWriteLock;
 
 	typedef boost::shared_lock<boost::shared_mutex> ReadLock;
 	typedef boost::unique_lock<boost::shared_mutex> WriteLock;
 
-	std::unique_lock<boost::detail::spinlock> getLock(size_t index, bool isDefer = false)
+	std::unique_lock<SpinLock> getLock(size_t index, bool isDefer = false)
 	{
 		if (isDefer)
 		{
@@ -48,6 +50,11 @@ private:
 		{
 			return std::unique_lock<boost::detail::spinlock>(heap[index].second);
 		}
+	}
+
+	size_t size() const
+	{
+		return heap.size();
 	}
 
 	size_t min(size_t first, size_t second) const
@@ -70,32 +77,13 @@ private:
 		return false;
 	}
 
-	void heapify(size_t index)
+	void siftDown(size_t index, std::unique_lock<SpinLock> currentLock)
 	{
 		ReadLock readLock(readWriteLock);
 
 		if (index >= size())
 		{
 			return;
-		}
-
-		// sift up
-		if (index > 0)
-		{
-			size_t parent = (index-1) / 2;
-
-			auto currentLock = getLock(index, true);
-			auto parentLock = getLock(parent, true);
-			std::lock(currentLock, parentLock);			
-
-			if (compareAndSwap(parent, index))
-			{
-				currentLock.unlock();
-				parentLock.unlock();
-				readLock.unlock();
-				heapify(parent);
-				return;
-			}
 		}
 
 		size_t left = 2 * index + 1;
@@ -107,98 +95,121 @@ private:
 			return;
 		}
 
-		auto currentLock = getLock(index, true);
 		auto leftLock = getLock(left, true);
 		std::unique_lock<boost::detail::spinlock> rightLock;
-		if (size() > right) 
-		{
-			rightLock = getLock(right, true);
-			std::lock(currentLock, leftLock, rightLock);
-		}
-		else
-		{
-			std::lock(currentLock, leftLock);
-		}
-
-		int swap_index = -1;
-		if (size() == right)
-		{
-			swap_index = left;
-		}
-		else
-		{
-			swap_index = min(left, right);
-		}
-
-		bool needHeapify = compareAndSwap(index, swap_index);
-
-		currentLock.unlock();
-		leftLock.unlock();
 		if (size() > right)
 		{
-			rightLock.unlock();
+			// two children
+			rightLock = getLock(right, true);
+			std::lock(leftLock, rightLock);
 		}
-
-		if (needHeapify)
+		else
 		{
-			readLock.unlock();
-			heapify(swap_index);
+			// one child
+			leftLock.lock();
 		}
-	}	
 
-	size_t size() const
+		int swapIndex = -1;
+		if (size() == right)
+		{
+			swapIndex = left;
+		}
+		else
+		{
+			swapIndex = min(left, right);
+		}
+
+		bool needHeapify = compareAndSwap(index, swapIndex);
+
+		if (!needHeapify)
+		{
+			return;
+		}
+
+		currentLock.unlock();
+
+		if (size() > right)
+		{
+			// two children
+			if (swapIndex == left)
+			{
+				rightLock.unlock();
+				siftDown(left, std::move(leftLock));
+			}
+			else
+			{
+				leftLock.unlock();
+				siftDown(right, std::move(rightLock));
+			}
+		}
+		else
+		{
+			siftDown(left, std::move(leftLock));
+		}
+	}
+
+	void siftUp(size_t index)
 	{
-		return heap.size();
+		if (index > 0)
+		{
+			size_t parent = (index - 1) / 2;
+
+			if (compareAndSwap(parent, index))
+			{
+				siftUp(parent);
+			}
+		}
 	}
 
 public:
-	std::shared_ptr<T> get_min()
+	PriorityQueue(const std::vector<T> & values)
 	{
-		WriteLock writeLock(readWriteLock);
-
-		if (heap.empty())
+		for (auto & item : values)
 		{
-			return std::shared_ptr<T>();
+			add(item, item);
+		}
+	}
+
+	std::shared_ptr<T> getMin()
+	{
+		boost::upgrade_lock<boost::shared_mutex> lock(readWriteLock);
+		std::shared_ptr<T> result;		
+
+		auto topLock = getLock(0, true); 
+
+		if (size() == 1)
+		{
+			topLock.lock();
+			boost::upgrade_to_unique_lock<boost::shared_mutex> uniqueLock(lock);
+			result = heap.front().first.item;
+			heap.pop_back();
+			return result;
 		}
 
-		auto min_ptr = heap.front().first.item;
-		std::swap(heap.front().first, heap.back().first);
-		heap.pop_back();
-
-		if (size() < 2)
+		auto lastLock = getLock(size() - 1, true);
+		std::lock(topLock, lastLock);
 		{
-			return min_ptr;
+			boost::upgrade_to_unique_lock<boost::shared_mutex> uniqueLock(lock);
+			result = heap.front().first.item;
+			std::swap(heap.front().first, heap.back().first);
+			heap.pop_back();
 		}
 
-		if (size() == 2)
-		{
-			compareAndSwap(0, 1);
-			return min_ptr;
-		}
+		lastLock.unlock();
+		siftDown(0, std::move(topLock));
+	}
 
-		size_t min_child = min(1, 2);
-		if (compareAndSwap(0, min_child))
-		{
-			writeLock.unlock();
-			heapify(min_child);
-			return min_ptr;
-		}
-
-		return min_ptr;
+	void add(const T & task, int priority)
+	{
+		WriteLock lock(readWriteLock);
+		heap.emplace_back(QueueItem(task, priority), SpinLock());
+		size_t lastIndex = size() - 1;
+		siftUp(lastIndex);
 	}
 
 	bool empty() const
 	{
 		ReadLock lock(readWriteLock);
 		return heap.size() == 0;
-	}
-
-	void add(const T & value, int priority)
-	{
-		WriteLock writelock(readWriteLock);
-		heap.emplace_back(QueueItem(value, priority), boost::detail::spinlock());
-		size_t lastIndex = size() - 1;
-		writelock.unlock();
-		heapify(lastIndex);
 	}
 };

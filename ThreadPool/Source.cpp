@@ -54,7 +54,7 @@ int main()
 	SimpleThreadPool pool;
 	
 	srand(3);
-	const int size = 1000;
+	const int size = 3;
 	Matrix m1(size), m2(size), m3(size);
 	std::vector<Future<void>> futures;
 
@@ -64,6 +64,9 @@ int main()
 	m2.fill();
 
 	std::cout << "end fill" << std::endl;
+
+	m1.print();
+	m2.print();
 
 	auto f = [&](size_t row)
 	{
@@ -90,6 +93,7 @@ int main()
 	auto tm = std::chrono::duration_cast<std::chrono::duration<double>>(end - begin);
 	std::cout << tm.count() << std::endl;
 
+	m3.print();
+
 	return 0;
 }
-

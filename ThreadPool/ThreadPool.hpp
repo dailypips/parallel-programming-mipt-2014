@@ -131,7 +131,7 @@ public:
 			lock.unlock();
 			if (!queue.empty())
 			{
-				auto ptr = queue.get_min();
+				auto ptr = queue.getMin();
 				if (ptr)
 				{
 					return ptr;
