@@ -79,8 +79,6 @@ private:
 
 	void siftDown(size_t index, std::unique_lock<SpinLock> currentLock)
 	{
-		ReadLock readLock(readWriteLock);
-
 		if (index >= size())
 		{
 			return;
@@ -194,6 +192,7 @@ public:
 
 		lastLock.unlock();
 		siftDown(0, std::move(topLock));
+		return result;
 	}
 
 	void add(const T & task, int priority)
