@@ -162,18 +162,15 @@ private:
 	}
 
 public:
-	PriorityQueue(const std::vector<T> & values)
-	{
-		for (auto & item : values)
-		{
-			add(item, item);
-		}
-	}
-
 	std::shared_ptr<T> getMin()
 	{
 		boost::upgrade_lock<boost::shared_mutex> lock(readWriteLock);
 		std::shared_ptr<T> result;		
+
+		if (size() == 0)
+		{
+			return std::shared_ptr<T>();
+		}
 
 		auto topLock = getLock(0, true); 
 
