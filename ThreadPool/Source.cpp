@@ -48,13 +48,65 @@ public:
 	}
 };
 
+void queue_test()
+{
+	std::cout << "starting queue test" << std::endl;
+	PriorityQueue<int> queue;
+
+	const int OPERATIONS_PER_THREAD = 500;
+	const int THREADS_COUNT = 20;
+
+	auto filler = [&]()
+	{
+		for (size_t index = 0; index < OPERATIONS_PER_THREAD; ++index)
+		{
+			queue.add(index, index);
+		}
+	};
+
+	auto getter = [&]()
+	{
+		for (size_t index = 0; index < OPERATIONS_PER_THREAD; ++index)
+		{
+			queue.getMin();
+		}
+	};
+
+	auto worker = [=](std::function<void()> func)
+	{
+		std::vector<boost::thread> threads;
+		for (size_t index = 0; index < THREADS_COUNT; ++index)
+		{
+			threads.emplace_back(func);
+		}
+
+		for (auto & it : threads)
+		{
+			it.join();
+		}
+	};
+
+	std::cout << "start filling" << std::endl;
+	worker(filler);
+	std::cout << "size after filling: " << queue.size() << std::endl;
+	std::cout << "start getting" << std::endl;
+	worker(getter);
+	std::cout << "size after getting: " << queue.size() << std::endl;
+	std::cout << "done" << std::endl;
+
+	assert(queue.empty());
+}
 
 int main()
 {
-	SimpleThreadPool pool;
+	queue_test();
+
+	PriorityThreadPool pool;
 	
-	srand(3);
-	const int size = 3;
+	std::cout << "start matrix test" << std::endl;
+
+	srand(time(NULL));
+	const int size = 1000;
 	Matrix m1(size), m2(size), m3(size);
 	std::vector<Future<void>> futures;
 
@@ -64,9 +116,6 @@ int main()
 	m2.fill();
 
 	std::cout << "end fill" << std::endl;
-
-	m1.print();
-	m2.print();
 
 	auto f = [&](size_t row)
 	{
@@ -83,7 +132,6 @@ int main()
 
 	for (size_t index = 0; index < size; ++index)
 	{
-		//std::cout << "running for row #" << index << std::endl;
 		futures.push_back(pool.runAsync(std::bind(f, index)));
 	}
 
@@ -92,8 +140,6 @@ int main()
 	auto end = std::chrono::high_resolution_clock::now();
 	auto tm = std::chrono::duration_cast<std::chrono::duration<double>>(end - begin);
 	std::cout << tm.count() << std::endl;
-
-	m3.print();
 
 	return 0;
 }

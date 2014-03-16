@@ -11,6 +11,14 @@
 
 #include "Future.hpp"
 
+//#define DEBUG
+
+#ifdef DEBUG
+#define D(a) std::cout << a << std::endl;
+#else
+#define D(a) ;
+#endif
+
 template<class T>
 class PriorityQueue
 {
@@ -52,11 +60,6 @@ private:
 		}
 	}
 
-	size_t size() const
-	{
-		return heap.size();
-	}
-
 	size_t min(size_t first, size_t second) const
 	{
 		if (heap[first].first < heap[second].first)
@@ -79,6 +82,7 @@ private:
 
 	void siftDown(size_t index, std::unique_lock<SpinLock> currentLock)
 	{
+		ReadLock lock(readWriteLock);
 		if (index >= size())
 		{
 			return;
@@ -93,56 +97,41 @@ private:
 			return;
 		}
 
-		auto leftLock = getLock(left, true);
-		std::unique_lock<boost::detail::spinlock> rightLock;
 		if (size() > right)
 		{
 			// two children
-			rightLock = getLock(right, true);
+			auto leftLock = getLock(left, true);
+			auto rightLock = getLock(right, true);
+
+			D("locking " << left << " and " << right);
+			D("size = " << size());
 			std::lock(leftLock, rightLock);
+
+			int swapIndex = min(left, right);
+			if (compareAndSwap(index, swapIndex))
+			{
+				currentLock.unlock();
+				if (swapIndex == left)
+				{
+					rightLock.unlock();
+					siftDown(left, std::move(leftLock));
+				}
+				else
+				{
+					leftLock.unlock();
+					siftDown(right, std::move(rightLock));
+				}
+			}
 		}
 		else
 		{
 			// one child
-			leftLock.lock();
-		}
-
-		int swapIndex = -1;
-		if (size() == right)
-		{
-			swapIndex = left;
-		}
-		else
-		{
-			swapIndex = min(left, right);
-		}
-
-		bool needHeapify = compareAndSwap(index, swapIndex);
-
-		if (!needHeapify)
-		{
-			return;
-		}
-
-		currentLock.unlock();
-
-		if (size() > right)
-		{
-			// two children
-			if (swapIndex == left)
+			auto leftLock = getLock(left);
+			if (compareAndSwap(index, left))
 			{
-				rightLock.unlock();
+				currentLock.unlock();
 				siftDown(left, std::move(leftLock));
 			}
-			else
-			{
-				leftLock.unlock();
-				siftDown(right, std::move(rightLock));
-			}
-		}
-		else
-		{
-			siftDown(left, std::move(leftLock));
 		}
 	}
 
@@ -170,27 +159,26 @@ public:
 			return std::shared_ptr<T>();
 		}
 
-		auto topLock = getLock(0, true); 
+		auto topLock = getLock(0); 
 
 		if (size() == 1)
 		{
-			topLock.lock();
 			boost::upgrade_to_unique_lock<boost::shared_mutex> uniqueLock(lock);
 			result = heap.front().first.item;
 			heap.pop_back();
 			return result;
 		}
 
-		auto lastLock = getLock(size() - 1, true);
-		std::lock(topLock, lastLock);
 		{
 			boost::upgrade_to_unique_lock<boost::shared_mutex> uniqueLock(lock);
 			result = heap.front().first.item;
+			auto lastLock = getLock(size() - 1);
 			std::swap(heap.front().first, heap.back().first);
+			lastLock.unlock();
 			heap.pop_back();
 		}
 
-		lastLock.unlock();
+		lock.unlock();
 		siftDown(0, std::move(topLock));
 		return result;
 	}
@@ -207,5 +195,10 @@ public:
 	{
 		ReadLock lock(readWriteLock);
 		return heap.size() == 0;
+	}
+
+	size_t size() const
+	{
+		return heap.size();
 	}
 };

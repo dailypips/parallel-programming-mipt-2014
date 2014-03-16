@@ -13,6 +13,7 @@ template<template<class K> class QUEUE_STRATEGY>
 // void closeQueue();
 class ThreadPool : public QUEUE_STRATEGY<std::function<void()>>
 {
+	typedef QUEUE_STRATEGY<std::function<void()>> Parent;
 private:
 	std::vector<std::thread> workers;
 
@@ -20,7 +21,7 @@ private:
 	{
 		while(true)
 		{
-			auto task = getNext();
+			auto task = Parent::getNext();
 			if (!task)
 			{
 				break;
@@ -51,14 +52,14 @@ public:
 
 	void close()
 	{
-		closeQueue();
+		Parent::closeQueue();
 	}
 };
 
 template<class T, class Fn> 
-std::function<void()> make_func(Future<T> & future, Fn & task)
+std::function<void()> make_func(Future<T> future, Fn task)
 {
-	return [future, &task]() mutable 
+	return [=]() mutable 
 	{ 
 		try
 		{
@@ -72,9 +73,9 @@ std::function<void()> make_func(Future<T> & future, Fn & task)
 }
 
 template<class Fn>
-std::function<void()> make_func(Future<void> & future, Fn & task)
+std::function<void()> make_func(Future<void> future, Fn task)
 {
-	return [future, &task]() mutable 
+	return [=]() mutable 
 	{ 
 		try
 		{
@@ -148,7 +149,7 @@ public:
 	}		
 
 	template<class Fn>
-	Future<typename std::result_of<Fn()>::type> runAsync(Fn & task, int priority = DEFAULT_PRIORITY)
+	Future<typename std::result_of<Fn()>::type> runAsync(Fn task, int priority = DEFAULT_PRIORITY)
 	{
 		Future<typename std::result_of<Fn()>::type> future;
 		auto fn = make_func(future, task);
