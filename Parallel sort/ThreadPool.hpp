@@ -213,7 +213,7 @@ public:
 	}	
 
 	template<class Fn>
-	Future<typename std::result_of<Fn()>::type> runAsync(Fn & task)
+	Future<typename std::result_of<Fn()>::type> runAsync(Fn task)
 	{
 		Future<typename std::result_of<Fn()>::type> future;
 		auto fn = make_func(future, task);

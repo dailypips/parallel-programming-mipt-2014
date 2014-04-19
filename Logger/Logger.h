@@ -1,9 +1,10 @@
 #include <ostream>
-#include <boost\thread.hpp>
+#include <boost/thread.hpp>
 #include <mutex>
 #include <chrono>
 #include <ctime>
 #include <atomic>
+#include <ctime>
 
 class Logger
 {
@@ -22,7 +23,9 @@ private:
 
 		void printTo(std::ostream & out)
 		{
-			out << std::put_time(std::localtime(&dateTime), "%c") << ": " << message << std::endl;
+			char buffer[80];
+			strftime(buffer, 80, "%x %X", std::localtime(&dateTime));
+			out << buffer << ": " << message << std::endl;
 		}
 	};
 

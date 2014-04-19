@@ -1,7 +1,7 @@
 #include "Sorter.hpp"
 
 #define BOOST_TEST_MODULE SorterTest
-#include <boost\test\included\unit_test.hpp>
+#include <boost/test/included/unit_test.hpp>
 
 BOOST_AUTO_TEST_CASE(normal_work_test)
 {

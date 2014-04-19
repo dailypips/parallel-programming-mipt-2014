@@ -5,10 +5,10 @@
 
 namespace my {
 
-	template<class ForwardIt, class Cmp = std::less<std::iterator_traits<ForwardIt>::value_type>>
+	template<class ForwardIt, class Cmp = std::less<typename std::iterator_traits<ForwardIt>::value_type>>
 	void sort(ForwardIt begin, ForwardIt end, Cmp cmp = Cmp())
 	{
-		using T = std::iterator_traits<ForwardIt>::value_type;
+		using T = typename std::iterator_traits<ForwardIt>::value_type;
 
 		SimpleThreadPool pool;
 
@@ -22,20 +22,20 @@ namespace my {
 				std::advance(pivotIter, size / 2);
 				T const & pivot = *pivotIter;
 
-				auto middle1 = std::partition(begin, end,
+				ForwardIt middle1 = std::partition(begin, end,
 					[&](const T & item)
 				{
 					return cmp(item, pivot);
 				});
 
-				auto middle2 = std::partition(middle1, end,
+				ForwardIt middle2 = std::partition(middle1, end,
 					[&](const T & item)
 				{
 					return !cmp(pivot, item);
 				});
 
 
-				pool.runAsync(std::bind(sorter, middle2, end));
+				pool.runAsync<std::function<void()>>(std::bind(sorter, middle2, end));
 				end = middle1;
 			}
 		};

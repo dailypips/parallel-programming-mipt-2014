@@ -49,12 +49,12 @@ int main()
 	auto il = { 2, 3, 4, 1, 6, 7, 5 };
 	for (size_t index = 0; index < 13; ++index)
 	{
-		vec.push_back(il);
+	vec.push_back(il);
 	}
 
 	auto mul = [](const Permutation & a, const Permutation & b)
 	{
-		return a * b;
+	return a * b;
 	};
 
 	parallel_scan(vec.begin(), vec.end(), mul);
@@ -63,7 +63,6 @@ int main()
 	{
 		std::cout << it;
 	}
-
 
 	return 0;
 }
