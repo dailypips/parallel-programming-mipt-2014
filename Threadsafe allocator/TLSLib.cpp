@@ -2,7 +2,7 @@
 
 namespace tls
 {
-	size_t main_block_pool::bin_sizes[] = { 8, 16, 32, 64, 128, 256 };
+	size_t main_pool::bin_sizes[] = { 8, 16, 32, 64, 128, 256 };
 
 	///////////////////////////////////////////////////////
 	// class super_block_t
@@ -12,12 +12,13 @@ namespace tls
 	super_block_t<BIN_SIZE>::super_block_t()
 	{
 		_init();
+		header.blocks_avail = MAX_BINS;
 	}
 
 	template<size_t BIN_SIZE>
 	void * super_block_t<BIN_SIZE>::new_block(size_t count)
 	{
-		if (!blocks_available())
+		if (avail_space() == 0)
 		{
 			throw std::exception("out of blocks");
 		}
@@ -29,7 +30,7 @@ namespace tls
 
 		void * result = header.avail;
 		header.avail = header.avail->next;
-		size--;
+		header.blocks_avail--;
 		return result;
 	}
 
@@ -75,176 +76,292 @@ namespace tls
 	{
 		while (!header.blocks_to_delete.empty())
 		{
-			void * block = blocks_to_delete.front();
-			blocks_to_delete.pop();
+			void * block = header.blocks_to_delete.front();
+			header.blocks_to_delete.pop();
 			_free_block_no_check(block);
 		}
 	}
 
 	///////////////////////////////////////////////////////
-	// class main_block_pool
+	// class super_block_bin
 	///////////////////////////////////////////////////////
-
-	void main_block_pool::init_local_pool(super_blocks_bin local_blocks[])
+	bool super_block_bin::check_ownership(void * mem)
 	{
-		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		for (auto & it : blocks)
 		{
-			local_blocks[index].add_block(get_super_block(bin_sizes[index]));
-		}
-	}
-
-	_sb_ptr main_block_pool::get_super_block(size_t bin_size)
-	{
-		size_t index = _get_index_for_size(bin_size);
-		if (index == -1)
-		{
-			throw std::invalid_argument("unknown bin size");
-		}
-
-		auto block = blocks[index].get_block();
-		used_blocks.insert(block);
-		return block;
-	}
-
-	void main_block_pool::free_super_block(_sb_ptr block)
-	{
-		auto it = used_blocks.find(block);
-		if (it == used_blocks.end())
-		{
-			throw std::invalid_argument("alien block");
-		}
-
-		used_blocks.erase(it);
-
-		size_t index = _get_index_for_size(block->get_block_size());
-		blocks[index].add_block(block);
-	}
-
-	size_t main_block_pool::_get_index_for_size(size_t bin_size) const
-	{
-		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
-		{
-			if (bin_sizes[index] == bin_size)
+			if (it->check_block_ownership(mem))
 			{
-				return index;
+				return true;
 			}
 		}
-		return -1;
+		return false;
 	}
 
-	main_block_pool::main_block_pool()
+	void super_block_bin::update_blocks()
 	{
-		blocks[0].add_block(new super_block_t<8>());
-		blocks[1].add_block(new super_block_t<16>());
-		blocks[2].add_block(new super_block_t<32>());
-		blocks[3].add_block(new super_block_t<64>());
-		blocks[4].add_block(new super_block_t<128>());
-		blocks[5].add_block(new super_block_t<256>());
-	}
-
-	void * main_block_pool::get_big_block(size_t n_bytes)
-	{
-		return malloc(n_bytes);
-	}
-
-	///////////////////////////////////////////////////////
-	// class local_block_pool
-	///////////////////////////////////////////////////////
-
-	void * local_block_pool::new_block(size_t n_bytes)
-	{
-		size_t index = _get_bin_for_size(n_bytes);
-
-		if (index == -1)
+		for (auto & it : blocks)
 		{
-			return main_pool.get_big_block(n_bytes);
+			it->update();
 		}
 
-		return blocks[index].new_mem(n_bytes);
+		_sort();
 	}
 
-	void local_block_pool::free_block(void * mem)
+	size_t super_block_bin::get_block_size() const
 	{
-		size_t index = _get_bin_for_mem(mem);
-		if (index == -1)
+		return blocks.front()->get_block_size();
+	}
+
+	void * super_block_bin::new_mem(size_t n_bytes)
+	{
+		_sb_ptr block = _get_block_avail_space();
+		if (block == nullptr)
 		{
-			main_pool.free_foreign_block(mem);
-			return;
+			size_t block_size = get_block_size();
+			block = pool->new_super_block(block_size);
+			blocks.push_back(block);
 		}
 
-		blocks[index].free_mem(mem);
+		return block->new_block(n_bytes);
 	}
 
-	size_t local_block_pool::_get_bin_for_size(size_t n_bytes) const
+	void super_block_bin::free_mem(void * mem)
 	{
-		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		for (auto & it : blocks)
 		{
-			if (blocks[index].get_block_size() > n_bytes)
+			if (it->check_block_ownership(mem))
 			{
-				return index;
+				it->free_block(mem);
+			}
+		}
+	}
+
+	_sb_ptr super_block_bin::_get_block_avail_space()
+	{
+		for (auto & it : blocks)
+		{
+			if (it->avail_space() != 0)
+			{
+				return it;
 			}
 		}
 
-		return -1;
+		return nullptr;
 	}
 
-	///////////////////////////////////////////////////////
-	// class super_blocks_bin
-	///////////////////////////////////////////////////////
-
-	void super_blocks_bin::_sort()
+	void super_block_bin::_sort()
 	{
 		auto cmp = [](const _sb_ptr first, const _sb_ptr second)
 		{
 			return first->avail_space() < second->avail_space();
 		};
+
 		std::sort(blocks.begin(), blocks.end(), cmp);
 	}
 
-	void super_blocks_bin::add_block(_sb_ptr block)
+	void super_block_bin::set_pool(main_pool * pool)
 	{
-		blocks.push_back(block);
-		_sort();
+		this->pool = pool;
 	}
 
-	_sb_ptr super_blocks_bin::get_block_space_avail() const
+	void super_block_bin::add_block(_sb_ptr block)
 	{
-		auto it = blocks.begin();
-		while ((*it)->avail_space() == 0)
+		blocks.push_back(block);
+	}
+
+	///////////////////////////////////////////////////////
+	// class local_pool
+	///////////////////////////////////////////////////////
+	local_pool::local_pool(main_pool & pool) :
+		is_initializing(true)
+	{
+		this->pool = &pool;
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
 		{
-			if (++it == blocks.end())
+			bins[index].set_pool(&pool);
+		}
+
+		pool.init_local_pool(bins);
+		is_initializing = false;
+	}
+
+	void * local_pool::new_mem(size_t n_bytes)
+	{
+		if (is_initializing)
+		{
+			return pool->new_big_block(n_bytes);
+		}
+
+		size_t index = _get_bin_for_size(n_bytes);
+		if (index == -1)
+		{
+			return pool->new_big_block(n_bytes);
+		}
+
+		_update_blocks();
+
+		return bins[index].new_mem(n_bytes);
+	}
+
+	void local_pool::free_mem(void * mem)
+	{
+		size_t index = _get_bin_for_mem(mem);
+		if (index == -1)
+		{
+			pool->free_foreign_mem(mem);
+		}
+
+		_update_blocks();
+
+		bins[index].free_mem(mem);
+	}
+
+	size_t local_pool::_get_bin_for_mem(void * mem)
+	{
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		{
+			if (bins[index].check_ownership(mem))
 			{
-				return nullptr;
+				return index;
 			}
 		}
 
-		return *it;
+		return -1;
 	}
 
-	size_t super_blocks_bin::get_block_size() const
+	size_t local_pool::_get_bin_for_size(size_t n_bytes)
 	{
-		return blocks.front()->get_block_size();
-	}
-
-
-
-	///////////////////////////////////////////////////////
-	// class super_block_storage
-	///////////////////////////////////////////////////////
-	_sb_ptr super_block_storage::get_block()
-	{
-		if (blocks.size() == 1)
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
 		{
-			blocks.push(blocks.front()->create_block());
+			if (bins[index].get_block_size() > n_bytes)
+			{
+				return index;
+			}
 		}
 
-		auto res = blocks.front();
-		blocks.pop();
+		return -1;
+	}
+
+	void local_pool::_update_blocks()
+	{
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		{
+			bins[index].update_blocks();
+		}
+	}
+
+	///////////////////////////////////////////////////////
+	// class super_block_cache
+	///////////////////////////////////////////////////////
+	void super_block_cache::add_block(_sb_ptr block)
+	{
+		size_t index = _get_index_for_size(block->get_block_size());
+		if (index == -1)
+		{
+			throw std::invalid_argument("unknown block size");
+		}
+
+		blocks[index].push_back(block);
+	}
+
+	_sb_ptr super_block_cache::get_block(size_t block_size)
+	{
+		size_t index = _get_index_for_size(block_size);
+		if (index == -1)
+		{
+			throw std::invalid_argument("unknown block size");
+		}
+
+		auto res = blocks[index].back();
+		blocks[index].pop_back();
+		if (blocks[index].size() == 0)
+		{
+			blocks[index].push_back(res->create_block());
+		}
+
 		return res;
 	}
 
-	void super_block_storage::add_block(_sb_ptr block)
+	size_t super_block_cache::_get_index_for_size(size_t block_size)
 	{
-		blocks.push(block);
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		{
+			if (blocks[index].front()->get_block_size() == block_size)
+			{
+				return index;
+			}
+		}
+
+		return -1;
+	}
+
+	super_block_cache::super_block_cache()
+	{
+		void * p = malloc(sizeof(super_block_t<8>));
+		blocks[0].push_back(new(p) super_block_t<8>());
+
+		p = malloc(sizeof(super_block_t<16>));
+		blocks[1].push_back(new(p)super_block_t<16>());
+
+		p = malloc(sizeof(super_block_t<32>));
+		blocks[2].push_back(new(p)super_block_t<32>());
+
+		p = malloc(sizeof(super_block_t<64>));
+		blocks[3].push_back(new(p)super_block_t<64>());
+
+		p = malloc(sizeof(super_block_t<128>));
+		blocks[4].push_back(new(p)super_block_t<128>());
+
+		p = malloc(sizeof(super_block_t<256>));
+		blocks[5].push_back(new(p)super_block_t<256>());
+	}
+
+	///////////////////////////////////////////////////////
+	// class main_pool
+	///////////////////////////////////////////////////////
+	_sb_ptr main_pool::new_super_block(size_t block_size)
+	{
+		auto result = cache.get_block(block_size);
+		used_blocks.insert(result);
+		return result;
+	}
+
+	void main_pool::free_super_block(_sb_ptr block)
+	{
+		auto it = used_blocks.find(block);
+		if (it == used_blocks.end())
+		{
+			throw std::invalid_argument("foreign block");
+		}
+
+		used_blocks.erase(it);
+		cache.add_block(block);
+	}
+
+	void * main_pool::new_big_block(size_t n_bytes)
+	{
+		return malloc(n_bytes);
+	}
+
+	void main_pool::free_foreign_mem(void * mem)
+	{
+		for (auto & it : used_blocks)
+		{
+			if (it->check_block_ownership(mem))
+			{
+				it->add_block_for_delete(mem);
+				return;
+			}
+		}
+
+		free(mem);
+	}
+
+	void main_pool::init_local_pool(super_block_bin bins[])
+	{
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		{
+			bins[index].add_block(new_super_block(bin_sizes[index]));
+		}
 	}
 }
