@@ -3,18 +3,20 @@
 #include <vector>
 #include <chrono>
 #include <string>
+#include <boost/thread.hpp>
 
 #include "TLSLib.hpp"
 
+#define BOOST_TEST_MODULE TLSLIB_TEST
+#ifdef _WIN32
+#include <boost/test/unit_test.hpp>
+#else
+#include <boost/test/included/unit_test.hpp>
+#endif
 
 void print_sizes()
 {
-	std::cout << sizeof(tls::super_block_t<8>) << std::endl;
-	std::cout << sizeof(tls::super_block_t<16>) << std::endl;
-	std::cout << sizeof(tls::super_block_t<32>) << std::endl;
-	std::cout << sizeof(tls::super_block_t<64>) << std::endl;
-	std::cout << sizeof(tls::super_block_t<128>) << std::endl;
-	std::cout << sizeof(tls::super_block_t<256>) << std::endl;
+	std::cout << sizeof(tls::super_block_t) << std::endl;
 }
 
 class timer
@@ -39,44 +41,56 @@ public:
 
 struct point
 {
+	int x[1000];
+};
+
+struct obj2
+{
 	int x, y;
 };
 
-
-
-void * operator new(size_t n) throw(std::bad_alloc)
-{	
-	static tls::main_pool main_pool;
-	static tls::local_pool local_pool(main_pool);
-	return local_pool.new_mem(n);
-}
-
-void operator delete(void * p) throw()
+void allocating_func()
 {
-	//return local_pool.free_mem(p);
-}
+	std::vector<obj2 *> vec;
 
-int main()
-{
-	std::vector<void *> mems;
-
+	if (true)
 	{
-		timer t("acquiring memory");
+		//timer t("allocating");
 		for (size_t index = 0; index < 10000; ++index)
 		{
-			//void * mem = local_pool.new_mem(sizeof(point));
-			point * pp = new point();
-			mems.push_back(pp);
+			vec.push_back(new obj2());
 		}
 	}
 
+	if (true)
 	{
-		timer t("freeing memory");
+		//timer t("deleting");
 		for (size_t index = 0; index < 10000; ++index)
 		{
-			//local_pool.free_mem(mems[index]);
-			delete mems[index];
+			delete vec[index];
 		}
 	}
-	return 0;
+}
+
+BOOST_AUTO_TEST_CASE(big_object_test)
+{
+	point * p = new point();
+	delete p;
+}
+
+BOOST_AUTO_TEST_CASE(many_small_objects_test)
+{
+	std::vector<boost::thread> threads;
+	{
+		timer t("allocating and freeing");
+		for(size_t index = 0; index < 4; ++index)
+		{
+			threads.emplace_back(&allocating_func);
+		}
+
+		for(auto & it: threads)
+		{
+			it.join();
+		}
+	}
 }

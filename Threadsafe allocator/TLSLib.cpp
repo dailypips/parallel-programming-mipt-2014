@@ -2,28 +2,42 @@
 
 namespace tls
 {
-	size_t main_pool::bin_sizes[] = { 8, 16, 32, 64, 128, 256 };
+	static size_t block_sizes[] = { 8, 16, 32, 64, 128, 256 };
+
+	///////////////////////////////////////////////////////
+	// utilities
+	///////////////////////////////////////////////////////
+	_sb_ptr create_block(size_t block_size)
+	{
+		void * p = malloc(sizeof(super_block_t));
+		return new(p) super_block_t(block_size);
+	}
+
+	void delete_block(_sb_ptr block)
+	{
+		block->~super_block_t();
+		free(block);
+	}
 
 	///////////////////////////////////////////////////////
 	// class super_block_t
 	///////////////////////////////////////////////////////
 
-	template<size_t BIN_SIZE>
-	super_block_t<BIN_SIZE>::super_block_t()
+	super_block_t::super_block_t(size_t block_size)
 	{
+		header.block_size = block_size;
 		_init();
-		header.blocks_avail = MAX_BINS;
-	}
+		header.blocks_avail = _max_block_count();
+	}	
 
-	template<size_t BIN_SIZE>
-	void * super_block_t<BIN_SIZE>::new_block(size_t count)
+	void * super_block_t::new_block(size_t count)
 	{
 		if (avail_space() == 0)
 		{
-			throw std::exception("out of blocks");
+			throw std::runtime_error("out of blocks");
 		}
 
-		if (count > BIN_SIZE)
+		if (count > get_block_size())
 		{
 			throw std::invalid_argument("incorrect block size");
 		}
@@ -34,8 +48,7 @@ namespace tls
 		return result;
 	}
 
-	template<size_t BIN_SIZE>
-	void super_block_t<BIN_SIZE>::free_block(void * block)
+	void super_block_t::free_block(void * block)
 	{
 		if (block == nullptr)
 		{
@@ -51,29 +64,32 @@ namespace tls
 		_delete_queued_blocks();
 	}
 
-	template<size_t BIN_SIZE>
-	void super_block_t<BIN_SIZE>::_init()
+	void super_block_t::_init()
 	{
-		for (size_t index = 1; index < MAX_BINS; ++index)
+		bin_t * prev_ptr = new(blocks) bin_t;
+		size_t block_size = get_block_size();
+		for (size_t index = block_size; index < DATA_SIZE; index += block_size)
 		{
-			blocks[index - 1].next = &blocks[index];
+			bin_t * ptr = new(blocks + index) bin_t;
+			prev_ptr->next = ptr;
+			prev_ptr = ptr;
 		}
-		blocks[MAX_BINS - 1].next = nullptr;
-		header.avail = blocks;
+
+		prev_ptr->next = nullptr;
+		header.avail = (bin_t*) blocks;
 	}
 
-	template<size_t BIN_SIZE>
-	void super_block_t<BIN_SIZE>::_free_block_no_check(void * block)
+	void super_block_t::_free_block_no_check(void * block)
 	{
-		bin_sized_t * bin_block = (bin_sized_t *)block;
+		bin_t * bin_block = (bin_t *)block;
 		bin_block->next = header.avail;
 		header.avail = bin_block;
 		header.blocks_avail++;
 	}
 
-	template<size_t BIN_SIZE>
-	void super_block_t<BIN_SIZE>::_delete_queued_blocks()
+	void super_block_t::_delete_queued_blocks()
 	{
+		std::lock_guard<std::mutex> lk(header.mutex);
 		while (!header.blocks_to_delete.empty())
 		{
 			void * block = header.blocks_to_delete.front();
@@ -109,7 +125,7 @@ namespace tls
 
 	size_t super_block_bin::get_block_size() const
 	{
-		return blocks.front()->get_block_size();
+		return block_size;
 	}
 
 	void * super_block_bin::new_mem(size_t n_bytes)
@@ -169,29 +185,28 @@ namespace tls
 		blocks.push_back(block);
 	}
 
+	void super_block_bin::set_block_size(size_t block_size)
+	{
+		this->block_size = block_size;
+	}
+
 	///////////////////////////////////////////////////////
 	// class local_pool
 	///////////////////////////////////////////////////////
-	local_pool::local_pool(main_pool & pool) :
-		is_initializing(true)
+	local_pool::local_pool(main_pool & pool)
 	{
 		this->pool = &pool;
 		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
 		{
 			bins[index].set_pool(&pool);
+			bins[index].set_block_size(block_sizes[index]);
 		}
 
 		pool.init_local_pool(bins);
-		is_initializing = false;
 	}
 
 	void * local_pool::new_mem(size_t n_bytes)
 	{
-		if (is_initializing)
-		{
-			return pool->new_big_block(n_bytes);
-		}
-
 		size_t index = _get_bin_for_size(n_bytes);
 		if (index == -1)
 		{
@@ -209,6 +224,7 @@ namespace tls
 		if (index == -1)
 		{
 			pool->free_foreign_mem(mem);
+			return;
 		}
 
 		_update_blocks();
@@ -233,7 +249,7 @@ namespace tls
 	{
 		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
 		{
-			if (bins[index].get_block_size() > n_bytes)
+			if (block_sizes[index] > n_bytes)
 			{
 				return index;
 			}
@@ -269,14 +285,14 @@ namespace tls
 		size_t index = _get_index_for_size(block_size);
 		if (index == -1)
 		{
-			throw std::invalid_argument("unknown block size");
+			throw std::runtime_error("unknown block size");
 		}
 
 		auto res = blocks[index].back();
 		blocks[index].pop_back();
-		if (blocks[index].size() == 0)
+		if (blocks[index].empty())
 		{
-			blocks[index].push_back(res->create_block());
+			blocks[index].push_back(create_block(block_size));
 		}
 
 		return res;
@@ -286,7 +302,7 @@ namespace tls
 	{
 		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
 		{
-			if (blocks[index].front()->get_block_size() == block_size)
+			if (block_sizes[index] == block_size)
 			{
 				return index;
 			}
@@ -297,23 +313,21 @@ namespace tls
 
 	super_block_cache::super_block_cache()
 	{
-		void * p = malloc(sizeof(super_block_t<8>));
-		blocks[0].push_back(new(p) super_block_t<8>());
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		{
+			blocks[index].push_back(create_block(block_sizes[index]));
+		}
+	}
 
-		p = malloc(sizeof(super_block_t<16>));
-		blocks[1].push_back(new(p)super_block_t<16>());
-
-		p = malloc(sizeof(super_block_t<32>));
-		blocks[2].push_back(new(p)super_block_t<32>());
-
-		p = malloc(sizeof(super_block_t<64>));
-		blocks[3].push_back(new(p)super_block_t<64>());
-
-		p = malloc(sizeof(super_block_t<128>));
-		blocks[4].push_back(new(p)super_block_t<128>());
-
-		p = malloc(sizeof(super_block_t<256>));
-		blocks[5].push_back(new(p)super_block_t<256>());
+	super_block_cache::~super_block_cache()
+	{
+		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
+		{
+			for (auto & it : blocks[index])
+			{
+				delete_block(it);
+			}
+		}
 	}
 
 	///////////////////////////////////////////////////////
@@ -321,6 +335,7 @@ namespace tls
 	///////////////////////////////////////////////////////
 	_sb_ptr main_pool::new_super_block(size_t block_size)
 	{
+		std::lock_guard<_rmx> lk(mutex);
 		auto result = cache.get_block(block_size);
 		used_blocks.insert(result);
 		return result;
@@ -328,6 +343,7 @@ namespace tls
 
 	void main_pool::free_super_block(_sb_ptr block)
 	{
+		std::lock_guard<_rmx> lk(mutex);
 		auto it = used_blocks.find(block);
 		if (it == used_blocks.end())
 		{
@@ -340,11 +356,13 @@ namespace tls
 
 	void * main_pool::new_big_block(size_t n_bytes)
 	{
+		std::lock_guard<_rmx> lk(mutex);
 		return malloc(n_bytes);
 	}
 
 	void main_pool::free_foreign_mem(void * mem)
 	{
+		std::lock_guard<_rmx> lk(mutex);
 		for (auto & it : used_blocks)
 		{
 			if (it->check_block_ownership(mem))
@@ -359,9 +377,35 @@ namespace tls
 
 	void main_pool::init_local_pool(super_block_bin bins[])
 	{
+		std::lock_guard<_rmx> lk(mutex);
 		for (size_t index = 0; index < BIN_SIZES_COUNT; ++index)
 		{
-			bins[index].add_block(new_super_block(bin_sizes[index]));
+			bins[index].add_block(new_super_block(block_sizes[index]));
 		}
 	}
+
+	main_pool::~main_pool()
+	{
+		for (auto & it : used_blocks)
+		{
+			delete_block(it);
+		}
+	}
+}
+
+tls::local_pool & get_local_pool()
+{
+	static tls::main_pool main_pool;
+	thread_local static tls::local_pool local_pool(main_pool);
+	return local_pool;
+}
+
+void * operator new(size_t n) throw(std::bad_alloc)
+{
+	return get_local_pool().new_mem(n);
+}
+
+void operator delete(void * p) throw()
+{
+	get_local_pool().free_mem(p);
 }

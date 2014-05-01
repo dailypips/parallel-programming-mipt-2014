@@ -5,6 +5,9 @@
 #include <set>
 #include <atomic>
 #include <memory>
+#include <iostream>
+#include <algorithm>
+#include <mutex>
 
 #include "malloc_allocator.hpp"
 
@@ -18,106 +21,88 @@ namespace tls
 	class local_pool;
 	class super_block_bin;
 
-	template<size_t SIZE>
 	union bin_t
 	{
-		bin_t<SIZE> * next;
-		char data[SIZE];
+		bin_t * next;
+		char * data;
+	};
+
+	enum _pool_state
+	{
+		ps_initializing,
+		ps_ready,
+		ps_destroyed
 	};
 
 	///////////////////////////////////////////////////////
 
-	class super_block_base_t
+	class super_block_t
 	{
-	public:
-		virtual size_t get_block_size() const = 0;
-		virtual void * new_block(size_t n_bytes) = 0;
-		virtual void free_block(void * block) = 0;
-		virtual bool check_block_ownership(void * block) const = 0;
-		virtual void add_block_for_delete(void * block) = 0;
-		virtual size_t avail_space() const = 0;
-		virtual super_block_base_t * create_block() = 0;
-		virtual void update() = 0;
-		virtual bool empty() = 0;
-	};
-
-	typedef super_block_base_t * _sb_ptr;
-	typedef malloc_allocator<_sb_ptr> alloc;
-
-	///////////////////////////////////////////////////////
-
-	template<size_t BIN_SIZE>
-	class super_block_t : public super_block_base_t
-	{
-		typedef bin_t<BIN_SIZE> bin_sized_t;
-
 		struct super_block_header_t
 		{
-			bin_sized_t * avail;
-			std::queue<void *> blocks_to_delete;
+			bin_t * avail;
+			std::queue<void *, std::deque<void *, malloc_allocator<void *>>> blocks_to_delete;
 			size_t blocks_avail;
+			size_t block_size;
+			std::mutex mutex;
 		};
 
 		static const int SUPER_BLOCK_SIZE = 4096;
-		static const int EFFECTIVE_SIZE = SUPER_BLOCK_SIZE - sizeof(super_block_header_t);
-		static const int MAX_BINS = EFFECTIVE_SIZE / BIN_SIZE;
+		static const int DATA_SIZE = SUPER_BLOCK_SIZE - sizeof(super_block_header_t);
 
 		super_block_header_t header;
-		bin_sized_t blocks[MAX_BINS];
-
+		char blocks[DATA_SIZE];
 
 	public:
-		super_block_t();
+		super_block_t(size_t block_size);
 
-		virtual size_t avail_space() const
+		size_t avail_space() const
 		{
 			return header.blocks_avail;
 		}
 
-		virtual size_t get_block_size() const
+		size_t get_block_size() const
 		{
-			return BIN_SIZE;
+			return header.block_size;
 		}
 
-		virtual _sb_ptr create_block()
+		bool check_block_ownership(void * block) const
 		{
-			return new super_block_t<BIN_SIZE>();
+			return (block >= blocks && block <= blocks + (DATA_SIZE - 1));
 		}
 
-		virtual bool check_block_ownership(void * block) const
+		void add_block_for_delete(void * block)
 		{
-			return (block >= blocks && block <= blocks + (MAX_BINS - 1));
-		}
-
-		virtual void add_block_for_delete(void * block)
-		{
+			std::lock_guard<std::mutex> lk(header.mutex);
 			header.blocks_to_delete.push(block);
 		}
 
-		virtual void update()
+		void update()
 		{
 			_delete_queued_blocks();
 		}
 
-		virtual bool empty()
+		bool empty()
 		{
-			return avail_space() == MAX_BINS;
+			return avail_space() == _max_block_count();
 		}
 
-		virtual void * new_block(size_t count);
-		virtual void free_block(void * block);
-
-	protected:
-		virtual size_t get_bin_size() const
-		{
-			return BIN_SIZE;
-		}
+		void * new_block(size_t count);
+		void free_block(void * block);
 
 	private:
-		void _init();
+		size_t _max_block_count() const
+		{
+			return DATA_SIZE / header.block_size;
+		}
+
+		void _init();		
 		void _free_block_no_check(void * block);
 		void _delete_queued_blocks();
 	};
+
+	typedef super_block_t * _sb_ptr;
+	typedef malloc_allocator<_sb_ptr> alloc;
 
 	///////////////////////////////////////////////////////
 
@@ -129,6 +114,7 @@ namespace tls
 
 	public:
 		super_block_cache();
+		~super_block_cache();
 		void add_block(_sb_ptr block);
 		_sb_ptr get_block(size_t block_size);
 	};
@@ -138,19 +124,23 @@ namespace tls
 	class main_pool
 	{
 	private:
-		static size_t bin_sizes[BIN_SIZES_COUNT];
-
 		super_block_cache cache;
 		std::set<_sb_ptr, std::less<_sb_ptr>, alloc> used_blocks;
+		
+		std::recursive_mutex mutex;
 
-		//_sb_ptr _get_block_for_mem(void * mem);
+		typedef std::recursive_mutex _rmx;
 
 	public:
+		~main_pool();
+
 		_sb_ptr new_super_block(size_t block_size);
 		void free_super_block(_sb_ptr block);
 		void init_local_pool(super_block_bin bins[]);
 		void * new_big_block(size_t n_bytes);
 		void free_foreign_mem(void * mem);
+
+		
 	};
 
 	//////////////////////////////////////////////////////////
@@ -160,6 +150,7 @@ namespace tls
 	private:
 		std::vector<_sb_ptr, alloc> blocks;
 		main_pool * pool;
+		size_t block_size;
 
 		_sb_ptr _get_block_avail_space();
 		void _sort();
@@ -171,6 +162,7 @@ namespace tls
 		void * new_mem(size_t n_bytes);
 		void free_mem(void * mem);
 		void set_pool(main_pool * pool);
+		void set_block_size(size_t block_size);
 		void add_block(_sb_ptr block);
 	};
 	
@@ -179,7 +171,6 @@ namespace tls
 	class local_pool
 	{
 	private:
-		bool is_initializing;
 		super_block_bin bins[BIN_SIZES_COUNT];
 		main_pool * pool;
 
