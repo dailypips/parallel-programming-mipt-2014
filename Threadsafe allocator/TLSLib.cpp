@@ -213,7 +213,7 @@ namespace tls
 			return pool->new_big_block(n_bytes);
 		}
 
-		_update_blocks();
+		//_update_blocks();
 
 		return bins[index].new_mem(n_bytes);
 	}
@@ -227,7 +227,7 @@ namespace tls
 			return;
 		}
 
-		_update_blocks();
+		//_update_blocks();
 
 		bins[index].free_mem(mem);
 	}
